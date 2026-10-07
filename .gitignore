@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+!.env.v1.example
+!.env.v2.example
+post-requisites/3.Prepare-Teams-Package/*.local.json
+post-requisites/3.Prepare-Teams-Package/appPackage.*.zip
+post-requisites/3.Prepare-Teams-Package/.appPackage.lock
+post-requisites/3.Prepare-Teams-Package/atlassian.json
+agent-deployment/.azure
+agent-deployment/agent/.appPackage.zip.azd-generated
+agent-deployment/agent/appPackage.zip
+agent-deployment/agent/TEAMS_APP_SETUP.md

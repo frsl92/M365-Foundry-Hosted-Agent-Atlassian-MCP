@@ -1,0 +1,88 @@
+<fragment>
+	<choose>
+		<when condition="@(context.Subscription == null)">
+			<return-response>
+				<set-status code="401" reason="Unauthorized" />
+				<set-header name="Content-Type" exists-action="override">
+					<value>application/json</value>
+				</set-header>
+				<set-header name="Cache-Control" exists-action="override">
+					<value>no-store</value>
+				</set-header>
+				<set-body>{"error":"subscription_key_required"}</set-body>
+			</return-response>
+		</when>
+	</choose>
+	<validate-jwt id="validate-user-token" header-name="Authorization" require-scheme="Bearer" require-expiration-time="true" require-signed-tokens="true" clock-skew="30" failed-validation-httpcode="401" failed-validation-error-message="A valid delegated APIM access token is required." output-token-variable-name="userJwt">
+		<openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
+		<audiences>
+			<audience>{{apim-api-client-id}}</audience>
+		</audiences>
+		<issuers>
+			<issuer>https://login.microsoftonline.com/{{tenant-id}}/v2.0</issuer>
+		</issuers>
+		<required-claims>
+			<claim name="ver" match="all">
+				<value>2.0</value>
+			</claim>
+			<claim name="tid" match="all">
+				<value>{{tenant-id}}</value>
+			</claim>
+			<claim name="azp" match="all">
+				<value>{{bot-user-auth-client-id}}</value>
+			</claim>
+			<claim name="scp" match="all" separator=" ">
+				<value>Mcp.Invoke</value>
+			</claim>
+		</required-claims>
+	</validate-jwt>
+	<set-variable name="userOid" value="@(((Jwt)context.Variables["userJwt"]).Claims.GetValueOrDefault("oid", ""))" />
+	<set-variable name="userTid" value="@(((Jwt)context.Variables["userJwt"]).Claims.GetValueOrDefault("tid", ""))" />
+	<choose>
+		<when condition="@{
+            Guid oid;
+            Guid tid;
+            return !Guid.TryParse((string)context.Variables["userOid"], out oid)
+                || !Guid.TryParse((string)context.Variables["userTid"], out tid);
+        }">
+			<return-response>
+				<set-status code="403" reason="Forbidden" />
+				<set-header name="Content-Type" exists-action="override">
+					<value>application/json</value>
+				</set-header>
+				<set-header name="Cache-Control" exists-action="override">
+					<value>no-store</value>
+				</set-header>
+				<set-body>{"error":"user_identity_required"}</set-body>
+			</return-response>
+		</when>
+	</choose>
+	<set-variable name="userOid" value="@(Guid.Parse((string)context.Variables["userOid"]).ToString("D"))" />
+	<set-variable name="userTid" value="@(Guid.Parse((string)context.Variables["userTid"]).ToString("D"))" />
+	<choose>
+		<when condition="@{
+            Guid teamsOid;
+            Guid teamsTid;
+            var validOid = Guid.TryParse(context.Request.Headers.GetValueOrDefault("x-teams-user-oid", ""), out teamsOid);
+            var validTid = Guid.TryParse(context.Request.Headers.GetValueOrDefault("x-teams-tenant-id", ""), out teamsTid);
+            return !validOid || !validTid
+                || teamsOid != Guid.Parse((string)context.Variables["userOid"])
+                || teamsTid != Guid.Parse((string)context.Variables["userTid"]);
+        }">
+			<return-response>
+				<set-status code="403" reason="Forbidden" />
+				<set-header name="Content-Type" exists-action="override">
+					<value>application/json</value>
+				</set-header>
+				<set-header name="Cache-Control" exists-action="override">
+					<value>no-store</value>
+				</set-header>
+				<set-body>{"error":"teams_account_mismatch"}</set-body>
+			</return-response>
+		</when>
+	</choose>
+	<set-variable name="connectionId" value="@((string)context.Variables["userOid"])" />
+	<set-header name="x-user-oid" exists-action="delete" />
+	<set-header name="x-teams-user-oid" exists-action="delete" />
+	<set-header name="x-teams-tenant-id" exists-action="delete" />
+</fragment>

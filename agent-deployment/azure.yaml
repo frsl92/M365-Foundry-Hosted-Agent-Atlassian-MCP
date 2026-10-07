@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+requiredVersions:
+  extensions:
+    azure.ai.agents: '>=1.0.0-beta.4'
+name: agent
+services:
+    ai-project:
+        host: azure.ai.project
+        endpoint: ${FOUNDRY_PROJECT_ENDPOINT}
+    agent:
+        project: agent
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        kind: hosted
+        name: atlassian-agent-3
+        protocols:
+            - protocol: activity
+              version: 2.0.0
+        agentEndpoint:
+            protocols:
+                - activity
+        authorizationSchemes:
+            - type: BotServiceTenant
+        env:
+            FOUNDRY_MODEL_NAME: ${FOUNDRY_MODEL_NAME}
+            GATEWAY_MODELS_ENDPOINT: ${GATEWAY_MODELS_ENDPOINT}
+            GATEWAY_SUBSCRIPTION_KEY: ${GATEWAY_SUBSCRIPTION_KEY}
+            APIM_MCP_URL: ${APIM_MCP_URL}
+            ATLASSIAN_STATUS_URL: ${ATLASSIAN_STATUS_URL}
+            APIM_STATUS_SUBSCRIPTION_KEY: ${APIM_STATUS_SUBSCRIPTION_KEY}
+            APIM_MCP_SUBSCRIPTION_KEY: ${APIM_MCP_SUBSCRIPTION_KEY}
+            AGENTAPPLICATION__USERAUTHORIZATION__HANDLERS__APIM__SETTINGS__AZUREBOTOAUTHCONNECTIONNAME: ${AGENTAPPLICATION__USERAUTHORIZATION__HANDLERS__APIM__SETTINGS__AZUREBOTOAUTHCONNECTIONNAME}
+infra:
+    provider: microsoft.foundry
+
+agentEndpoint:
+    

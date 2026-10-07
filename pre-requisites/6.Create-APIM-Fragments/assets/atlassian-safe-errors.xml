@@ -1,0 +1,35 @@
+<fragment>
+	<trace source="atlassian-gateway" severity="error">
+		<message>@("requestId=" + context.RequestId.ToString()
+            + "; policyId=" + context.LastError?.PolicyId
+            + "; reason=" + context.LastError?.Reason
+            + "; stage=" + context.Variables.GetValueOrDefault&lt;string&gt;("onboardingStage", "")
+            + "; upstreamStatus=" + context.Variables.GetValueOrDefault&lt;int&gt;("armStatus", 0))</message>
+	</trace>
+	<return-response>
+		<set-status code="@(context.LastError?.PolicyId == "validate-user-token" || context.LastError?.Reason == "SubscriptionKeyNotFound" || context.LastError?.Reason == "SubscriptionKeyInvalid" ? 401 : 502)" reason="Request failed" />
+		<set-header name="Content-Type" exists-action="override">
+			<value>application/json</value>
+		</set-header>
+		<set-header name="Cache-Control" exists-action="override">
+			<value>no-store</value>
+		</set-header>
+		<set-header name="x-correlation-id" exists-action="override">
+			<value>@(context.RequestId.ToString())</value>
+		</set-header>
+		<set-body>@{
+            var reason = context.LastError?.Reason;
+            var error = reason == "SubscriptionKeyNotFound"
+                ? "subscription_key_required"
+                : reason == "SubscriptionKeyInvalid"
+                    ? "invalid_subscription_key"
+                    : context.LastError?.PolicyId == "validate-user-token"
+                        ? "invalid_user_token"
+                        : "gateway_operation_failed";
+            return new JObject(
+                new JProperty("error", error),
+                new JProperty("correlationId", context.RequestId.ToString())
+            ).ToString();
+        }</set-body>
+	</return-response>
+</fragment>

@@ -1,0 +1,181 @@
+<policies>
+    <inbound>
+        <include-fragment fragment-id="atlassian-user-auth" />
+        <base />
+        <get-authorization-context id="get-atlassian-credential" provider-id="{{atlassian-credential-provider}}" authorization-id="@((string)context.Variables["connectionId"])" context-variable-name="atl" identity-type="managed" ignore-error="true" />
+        <choose>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;Authorization&gt;("atl") != null)">
+                <return-response>
+                    <set-status code="200" reason="OK" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-header name="Cache-Control" exists-action="override">
+                        <value>no-store</value>
+                    </set-header>
+                    <set-body>{"connected":true}</set-body>
+                </return-response>
+            </when>
+        </choose>
+        <trace source="atlassian-gateway" severity="information">
+            <message>@("requestId=" + context.RequestId.ToString() + "; credential unavailable; checking connection metadata")</message>
+        </trace>
+        <set-variable name="providerUrl" value="@("https://management.azure.com/subscriptions/{{sub-id}}/resourceGroups/{{rg}}/providers/Microsoft.ApiManagement/service/{{apim-name}}/authorizationProviders/{{atlassian-credential-provider}}")" />
+        <set-variable name="connUrl" value="@((string)context.Variables["providerUrl"] + "/authorizations/" + (string)context.Variables["connectionId"])" />
+        <set-variable name="onboardingStage" value="read-connection" />
+        <send-request mode="new" response-variable-name="connectionResponse" timeout="5" ignore-error="false">
+            <set-url>@((string)context.Variables["connUrl"] + "?api-version={{arm-api-version}}")</set-url>
+            <set-method>GET</set-method>
+            <authentication-managed-identity resource="https://management.azure.com/" />
+        </send-request>
+        <set-variable name="armStatus" value="@(((IResponse)context.Variables["connectionResponse"]).StatusCode)" />
+        <choose>
+            <when condition="@((int)context.Variables["armStatus"] == 404)">
+                <!-- A missing parent/provider must not trigger connection creation. -->
+                <set-variable name="onboardingStage" value="read-provider" />
+                <send-request mode="new" response-variable-name="providerResponse" timeout="5" ignore-error="false">
+                    <set-url>@((string)context.Variables["providerUrl"] + "?api-version={{arm-api-version}}")</set-url>
+                    <set-method>GET</set-method>
+                    <authentication-managed-identity resource="https://management.azure.com/" />
+                </send-request>
+                <set-variable name="armStatus" value="@(((IResponse)context.Variables["providerResponse"]).StatusCode)" />
+                <choose>
+                    <when condition="@((int)context.Variables["armStatus"] != 200)">
+                        <include-fragment fragment-id="atlassian-safe-errors" />
+                    </when>
+                </choose>
+                <set-variable name="onboardingStage" value="create-connection" />
+                <send-request mode="new" response-variable-name="connectionResponse" timeout="5" ignore-error="false">
+                    <set-url>@((string)context.Variables["connUrl"] + "?api-version={{arm-api-version}}")</set-url>
+                    <set-method>PUT</set-method>
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>{"properties":{"authorizationType":"OAuth2","oauth2grantType":"AuthorizationCode"}}</set-body>
+                    <authentication-managed-identity resource="https://management.azure.com/" />
+                </send-request>
+                <set-variable name="armStatus" value="@(((IResponse)context.Variables["connectionResponse"]).StatusCode)" />
+                <choose>
+                    <when condition="@((int)context.Variables["armStatus"] != 200 &amp;&amp; (int)context.Variables["armStatus"] != 201)">
+                        <include-fragment fragment-id="atlassian-safe-errors" />
+                    </when>
+                </choose>
+            </when>
+            <when condition="@((int)context.Variables["armStatus"] != 200)">
+                <include-fragment fragment-id="atlassian-safe-errors" />
+            </when>
+        </choose>
+        <set-variable name="onboardingStage" value="classify-connection" />
+        <set-variable name="needsConsent" value="@{
+            var connection = ((IResponse)context.Variables["connectionResponse"]).Body.As&lt;JObject&gt;(preserveContent: true);
+            var properties = connection["properties"];
+            return (string)connection["name"] == (string)context.Variables["connectionId"]
+                &amp;&amp; (string)properties?["authorizationType"] == "OAuth2"
+                &amp;&amp; (string)properties?["oauth2grantType"] == "AuthorizationCode"
+                &amp;&amp; (string)properties?["status"] == "Error"
+                &amp;&amp; (string)properties?["error"]?["code"] == "Unauthenticated";
+        }" />
+        <choose>
+            <when condition="@(!(bool)context.Variables["needsConsent"])">
+                <include-fragment fragment-id="atlassian-safe-errors" />
+            </when>
+        </choose>
+        <set-variable name="onboardingStage" value="read-access-policy" />
+        <send-request mode="new" response-variable-name="accessResponse" timeout="5" ignore-error="false">
+            <set-url>@((string)context.Variables["connUrl"] + "/accessPolicies/apim?api-version={{arm-api-version}}")</set-url>
+            <set-method>GET</set-method>
+            <authentication-managed-identity resource="https://management.azure.com/" />
+        </send-request>
+        <set-variable name="armStatus" value="@(((IResponse)context.Variables["accessResponse"]).StatusCode)" />
+        <choose>
+            <when condition="@((int)context.Variables["armStatus"] == 404)">
+                <set-variable name="onboardingStage" value="create-access-policy" />
+                <send-request mode="new" response-variable-name="accessResponse" timeout="5" ignore-error="false">
+                    <set-url>@((string)context.Variables["connUrl"] + "/accessPolicies/apim?api-version={{arm-api-version}}")</set-url>
+                    <set-method>PUT</set-method>
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>{"properties":{"tenantId":"{{tenant-id}}","objectId":"{{apim-mi-object-id}}"}}</set-body>
+                    <authentication-managed-identity resource="https://management.azure.com/" />
+                </send-request>
+                <set-variable name="armStatus" value="@(((IResponse)context.Variables["accessResponse"]).StatusCode)" />
+                <choose>
+                    <when condition="@((int)context.Variables["armStatus"] != 200 &amp;&amp; (int)context.Variables["armStatus"] != 201)">
+                        <include-fragment fragment-id="atlassian-safe-errors" />
+                    </when>
+                </choose>
+            </when>
+            <when condition="@((int)context.Variables["armStatus"] != 200)">
+                <include-fragment fragment-id="atlassian-safe-errors" />
+            </when>
+        </choose>
+        <set-variable name="onboardingStage" value="verify-access-policy" />
+        <choose>
+            <when condition="@{
+                var properties = ((IResponse)context.Variables["accessResponse"]).Body.As&lt;JObject&gt;(preserveContent: true)["properties"];
+                return !String.Equals((string)properties?["tenantId"], "{{tenant-id}}", StringComparison.OrdinalIgnoreCase)
+                    || !String.Equals((string)properties?["objectId"], "{{apim-mi-object-id}}", StringComparison.OrdinalIgnoreCase);
+            }">
+                <include-fragment fragment-id="atlassian-safe-errors" />
+            </when>
+        </choose>
+        <set-variable name="onboardingStage" value="get-login-link" />
+        <send-request mode="new" response-variable-name="loginResponse" timeout="5" ignore-error="false">
+            <set-url>@((string)context.Variables["connUrl"] + "/getLoginLinks?api-version={{arm-api-version}}")</set-url>
+            <set-method>POST</set-method>
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>@(new JObject(new JProperty("postLoginRedirectUrl", "{{atlassian-post-login-redirect-url}}")).ToString())</set-body>
+            <authentication-managed-identity resource="https://management.azure.com/" />
+        </send-request>
+        <set-variable name="armStatus" value="@(((IResponse)context.Variables["loginResponse"]).StatusCode)" />
+        <choose>
+            <when condition="@((int)context.Variables["armStatus"] != 200)">
+                <include-fragment fragment-id="atlassian-safe-errors" />
+            </when>
+        </choose>
+        <set-variable name="onboardingStage" value="verify-login-link" />
+        <set-variable name="loginLink" value="@((string)((IResponse)context.Variables["loginResponse"]).Body.As&lt;JObject&gt;()["loginLink"] ?? "")" />
+        <choose>
+            <when condition="@{
+                var value = (string)context.Variables["loginLink"];
+                if (String.IsNullOrWhiteSpace(value))
+                {
+                    return true;
+                }
+                var link = new Uri(value);
+                return !link.IsAbsoluteUri
+                    || link.Scheme != "https"
+                    || String.IsNullOrEmpty(link.Host)
+                    || link.Port != 443
+                    || !String.IsNullOrEmpty(link.UserInfo);
+            }">
+                <include-fragment fragment-id="atlassian-safe-errors" />
+            </when>
+        </choose>
+        <return-response>
+            <set-status code="200" reason="OK" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-header name="Cache-Control" exists-action="override">
+                <value>no-store</value>
+            </set-header>
+            <set-body>@(new JObject(
+                new JProperty("connected", false),
+                new JProperty("loginLink", (string)context.Variables["loginLink"])
+            ).ToString())</set-body>
+        </return-response>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <include-fragment fragment-id="atlassian-safe-errors" />
+    </on-error>
+</policies>

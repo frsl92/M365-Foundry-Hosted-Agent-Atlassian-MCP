@@ -1,0 +1,161 @@
+. (Join-Path $PSScriptRoot '..\Common.ps1')
+
+Describe 'Independent shared environment helpers' {
+    BeforeEach {
+        $envPath = Join-Path $TestDrive 'shared.env'
+        if (Test-Path -LiteralPath $envPath) { Remove-Item -LiteralPath $envPath }
+    }
+
+    It 'reads and writes escaped values without an archive dependency' {
+        $value = "quote`" slash\ newline`n tab`t"
+        Update-PrerequisiteEnv -Path $envPath -Values @{ CUSTOM_VALUE = $value }
+        (Read-PrerequisiteEnv -Path $envPath)['CUSTOM_VALUE'] | Should BeExactly $value
+    }
+
+    It 'preserves unrelated settings while formatting pre and post configuration' {
+        [IO.File]::WriteAllText($envPath, "# custom configuration`nCUSTOM_VALUE=keep`n")
+        Update-PrerequisiteEnv -Path $envPath -Values @{
+            ATLASSIAN_MCP_REDIRECT_URI = 'https://global.consent.azure-apim.net/redirect/11111111111111111111111111111111'
+            AZURE_FOUNDRY_AGENT_NAME = 'test-agent'
+            AZURE_BOT_SERVICE_RESOURCE_ID = 'test-bot'
+        }
+        $values = Read-PrerequisiteEnv -Path $envPath
+        $values['CUSTOM_VALUE'] | Should BeExactly 'keep'
+        $values['AZURE_FOUNDRY_AGENT_NAME'] | Should BeExactly 'test-agent'
+        $values['AZURE_BOT_SERVICE_RESOURCE_ID'] | Should BeExactly 'test-bot'
+        [IO.File]::ReadAllText($envPath) | Should Match '# custom configuration'
+    }
+
+    It 'refuses duplicate keys without modifying the existing file' {
+        $original = "VALUE=first`nVALUE=second`n"
+        [IO.File]::WriteAllText($envPath, $original)
+        { Update-PrerequisiteEnv -Path $envPath -Values @{ VALUE = 'replacement' } } | Should Throw 'Duplicate .env key'
+        [IO.File]::ReadAllText($envPath) | Should BeExactly $original
+    }
+
+    It 'keeps formatting stable across repeated updates' {
+        Update-PrerequisiteEnv -Path $envPath -Values @{ AZURE_FOUNDRY_AGENT_NAME = 'test-agent' }
+        $original = [IO.File]::ReadAllText($envPath)
+        Update-PrerequisiteEnv -Path $envPath -Values @{ AZURE_FOUNDRY_AGENT_NAME = 'test-agent' }
+        [IO.File]::ReadAllText($envPath) | Should BeExactly $original
+    }
+
+    It 'gives explicit values including empty values precedence over saved configuration' {
+        $values = @{ KEY = 'saved' }
+        Resolve-PrerequisiteValue -Parameters @{ Name = 'explicit' } -ParameterName Name -Values $values -Key KEY |
+            Should BeExactly 'explicit'
+        Resolve-PrerequisiteValue -Parameters @{ Name = '' } -ParameterName Name -Values $values -Key KEY |
+            Should BeExactly ''
+    }
+
+    It 'preserves an isolated Toolkit layout without inserting root configuration sections' {
+        [IO.File]::WriteAllText($envPath, "# Toolkit state`nTEAMS_APP_ID=original`n")
+        Update-PrerequisiteEnv -Path $envPath -Values @{
+            TEAMS_APP_ID = 'updated'
+            M365_APP_PACKAGE_PATH = 'C:\packages with spaces\appPackage.1.2.3.zip'
+        } -PreserveLayout
+        $text = [IO.File]::ReadAllText($envPath)
+        $text | Should Match '# Toolkit state'
+        $text | Should Not Match 'AZURE_FOUNDRY'
+        $values = Read-PrerequisiteEnv -Path $envPath
+        $values.Count | Should Be 2
+        $values['M365_APP_PACKAGE_PATH'] | Should BeExactly 'C:\packages with spaces\appPackage.1.2.3.zip'
+    }
+
+    It 'reads comments and quoted values and uses a default for missing optional values' {
+        [IO.File]::WriteAllText($envPath, "FIRST='literal # value'`nSECOND=plain # comment`n")
+        $values = Read-PrerequisiteEnv -Path $envPath
+        $values['FIRST'] | Should BeExactly 'literal # value'
+        $values['SECOND'] | Should BeExactly 'plain'
+        Resolve-PrerequisiteValue -Parameters @{} -ParameterName Name -Values $values -Key MISSING -DefaultValue fallback |
+            Should BeExactly 'fallback'
+    }
+
+    It 'puts every generated root output below every input in script order even when saved first' {
+        $sections = Get-PrerequisiteGeneratedSections
+        $outputs = [ordered]@{}
+        foreach ($section in $sections.Values) {
+            foreach ($key in $section) { $outputs[$key] = "saved-$key" }
+        }
+        Update-PrerequisiteEnv -Path $envPath -Values $outputs
+        Update-PrerequisiteEnv -Path $envPath -Values @{
+            AZURE_APIM_NAME = 'test-apim'
+            AZURE_FOUNDRY_PROJECT_ENDPOINT = 'https://test.services.ai.azure.com/api/projects/test'
+            AZURE_BOT_SERVICE_RESOURCE_ID = 'test-bot'
+        }
+        $text = [IO.File]::ReadAllText($envPath)
+        $values = Read-PrerequisiteEnv -Path $envPath
+        ($values.Keys -join '|') | Should BeExactly (
+            'AZURE_APIM_NAME|AZURE_FOUNDRY_PROJECT_ENDPOINT|AZURE_BOT_SERVICE_RESOURCE_ID|' +
+            ($outputs.Keys -join '|'))
+        $position = $text.IndexOf('AZURE_BOT_SERVICE_RESOURCE_ID=')
+        foreach ($section in $sections.GetEnumerator()) {
+            $heading = $text.IndexOf("# Generated by $($section.Key)")
+            $position | Should BeLessThan $heading
+            $position = $heading
+            foreach ($key in $section.Value) {
+                $values[$key] | Should BeExactly $outputs[$key]
+                $assignment = $text.IndexOf("$key=")
+                $position | Should BeLessThan $assignment
+                $position = $assignment
+            }
+        }
+        $values.Count | Should Be ($outputs.Count + 3)
+        Update-PrerequisiteEnv -Path $envPath -Values @{}
+        [IO.File]::ReadAllText($envPath) | Should BeExactly $text
+    }
+
+    It 'does not seed absent template defaults or output placeholders during a save' {
+        Update-PrerequisiteEnv -Path $envPath -Values @{ AUTH_CLIENT_ID = 'auth-id' }
+        $values = Read-PrerequisiteEnv -Path $envPath
+        $values.Count | Should Be 1
+        $values['AUTH_CLIENT_ID'] | Should BeExactly 'auth-id'
+        $text = [IO.File]::ReadAllText($envPath)
+        $text | Should Match '# Generated by 4.Register-Entra-Applications'
+        $text | Should Not Match '# Generated by 1.Register-Atlassian-Client'
+    }
+
+    It 'covers all environment keys referenced by the prerequisite workflows and publishing context' {
+        $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $inputs = Read-PrerequisiteEnv -Path (Join-Path $root '.env.v1.example')
+        $managed = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($key in $inputs.Keys) { $null = $managed.Add($key) }
+        foreach ($section in (Get-PrerequisiteGeneratedSections).Values) {
+            foreach ($key in $section) { $null = $managed.Add($key) }
+        }
+        $scripts = @(Get-ChildItem -LiteralPath (Join-Path $root 'pre-requisites') -Directory |
+            Where-Object { $_.Name -match '^[1-7]\.' } |
+            Get-ChildItem -Filter '*.ps1')
+        foreach ($script in $scripts) {
+            $text = [IO.File]::ReadAllText($script.FullName)
+            foreach ($match in [regex]::Matches($text, '\b(?:AZURE_|ATLASSIAN_|APIM_|AUTH_)[A-Z0-9_]+\b')) {
+                $managed.Contains($match.Value) | Should Be $true
+            }
+        }
+        foreach ($key in @('AZURE_FOUNDRY_PROJECT_ENDPOINT', 'AZURE_BOT_SERVICE_RESOURCE_ID')) {
+            $inputs.Contains($key) | Should Be $true
+        }
+        $inputs.Contains('AZURE_FOUNDRY_AGENT_NAME') | Should Be $false
+        $managed.Contains('AZURE_FOUNDRY_AGENT_NAME') | Should Be $true
+    }
+
+    It 'routes prerequisite and post-requisite environment handling through the same helpers' {
+        $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $wrapper = [IO.File]::ReadAllText((Join-Path $root 'pre-requisites\Common.ps1'))
+        $wrapper | Should Match '\.\.\\common-scripts\\Common\.ps1'
+        $wrapper | Should Not Match 'function '
+        foreach ($folder in @('pre-requisites', 'post-requisites')) {
+            $scripts = @(Get-ChildItem -LiteralPath (Join-Path $root $folder) -Directory |
+                Where-Object { $_.Name -match '^\d+\.' } |
+                Get-ChildItem -Filter '*.ps1')
+            foreach ($script in $scripts) {
+                $text = [IO.File]::ReadAllText($script.FullName)
+                if ($text -match '\$EnvFile') {
+                    $text | Should Match 'Common\.ps1'
+                    $text | Should Match '(Read-PrerequisiteEnv|Get-PublishingContext|Get-ApimProvisioningContext)'
+                    $text | Should Not Match '(WriteAllText|WriteAllLines)\(\$EnvFile'
+                }
+            }
+        }
+    }
+}

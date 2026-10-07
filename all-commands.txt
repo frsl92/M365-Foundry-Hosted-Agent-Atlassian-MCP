@@ -1,0 +1,33 @@
+# Sign in to Azure first
+az login --use-device-code 
+
+# 1. Register the Atlassian OAuth client
+.\pre-requisites\1.Register-Atlassian-Client\Register-AtlassianMcpClient.ps1
+
+# 2. Verify the APIM managed identity and grant its resource-scoped role
+.\pre-requisites\2.Configure-APIM-Identity\Configure-ApimIdentity.ps1
+
+# 3. Configure the Atlassian credential provider
+.\pre-requisites\3.Configure-APIM-Credential-Provider\Configure-ApimCredentialProvider.ps1
+
+# 4. Register the Entra API and user sign-in applications
+.\pre-requisites\4.Register-Entra-Applications\Register-EntraApplications.ps1
+
+# 5. Configure the APIM named values
+.\pre-requisites\5.Configure-APIM-Named-Values\Configure-ApimNamedValues.ps1
+
+# 6. Create the APIM policy fragments
+.\pre-requisites\6.Create-APIM-Fragments\Configure-ApimPolicyFragments.ps1
+
+# 7. Create the Connect API and expose the external MCP
+.\pre-requisites\7.Create-APIM-APIandMCP\Configure-ApimApis.ps1
+
+azd auth login --use-device-code 
+
+.\agent-deployment\deploy-agent.ps1
+
+.\post-requisites\1.Configure-Bot-OAuth\Configure-BotOAuth.ps1
+
+.\post-requisites\2.Configure-M365-Endpoint\Enable-M365Publishing.ps1
+
+.\post-requisites\3.Prepare-Teams-Package\Prepare-TeamsPackage.ps1 -MetadataFile .\post-requisites\3.Prepare-Teams-Package\atlassian.json

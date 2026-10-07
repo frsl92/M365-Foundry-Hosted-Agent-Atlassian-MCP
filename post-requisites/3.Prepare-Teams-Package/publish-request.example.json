@@ -1,0 +1,13 @@
+{
+  "agentDisplayName": "<your agent display name>",
+  "appVersion": "1.0.0",
+  "accentColor": "#4464ee",
+  "shortDescription": "<short description shown in the agent store>",
+  "fullDescription": "<full description shown in the agent store>",
+  "developerName": "<your organization>",
+  "developerWebsiteUrl": "https://example.com",
+  "privacyUrl": "https://example.com",
+  "termsOfUseUrl": "https://example.com",
+  "colorIconPath": "",
+  "outlineIconPath": ""
+}
