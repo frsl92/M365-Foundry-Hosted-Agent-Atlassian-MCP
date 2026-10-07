@@ -252,22 +252,13 @@ Describe 'Environment-driven deployment and post-requisite handoff' {
 
     It 'binds every injected agent setting under the actual manifest agent service' {
         $manifestPath = Join-Path $sourceRoot 'azure.yaml'
-        $python = @'
-import sys
-import yaml
-with open(sys.argv[1], encoding="utf-8") as f:
-    manifest = yaml.safe_load(f)
-if "env" in manifest["services"]:
-    raise ValueError("env must be under services.agent, not a separate service")
-env = manifest["services"]["agent"]["env"]
-for key, value in env.items():
-    if value != "${" + key + "}":
-        raise ValueError("Agent setting is not bound to its azd variable: " + key)
-print("|".join(env))
-'@
-        $keys = & python -c $python $manifestPath
-        if ($LASTEXITCODE -ne 0) { throw 'Validating agent environment bindings failed.' }
-        $keys | Should BeExactly (
+        $manifest = Read-DeploymentManifest -ManifestPath $manifestPath
+        $manifest['services'].Contains('env') | Should Be $false
+        $envBindings = $manifest['services']['agent']['env']
+        foreach ($key in $envBindings.Keys) {
+            $envBindings[$key] | Should BeExactly ('${' + $key + '}')
+        }
+        ($envBindings.Keys -join '|') | Should BeExactly (
             'FOUNDRY_MODEL_NAME|GATEWAY_MODELS_ENDPOINT|GATEWAY_SUBSCRIPTION_KEY|APIM_MCP_URL|ATLASSIAN_STATUS_URL|' +
             'APIM_STATUS_SUBSCRIPTION_KEY|APIM_MCP_SUBSCRIPTION_KEY|' +
             'AGENTAPPLICATION__USERAUTHORIZATION__HANDLERS__APIM__SETTINGS__AZUREBOTOAUTHCONNECTIONNAME')
@@ -300,16 +291,57 @@ print("|".join(env))
         @{ Label = 'non-string name'; Yaml = 'services: {agent: {host: azure.ai.agent, name: 123}}' },
         @{ Label = 'substitution'; Yaml = 'services: {agent: {host: azure.ai.agent, name: "${AZURE_FOUNDRY_AGENT_NAME}"}}' },
         @{ Label = 'duplicate name'; Yaml = 'services: {agent: {host: azure.ai.agent, name: first, name: second}}' },
+        @{ Label = 'duplicate service'; Yaml = 'services: {agent: {host: azure.ai.agent, name: first}, agent: {host: azure.ai.agent, name: second}}' },
+        @{ Label = 'duplicate unrelated key'; Yaml = 'services: {agent: {host: azure.ai.agent, name: valid}}, other: {key: first, key: second}' },
         @{ Label = 'wrong host'; Yaml = 'services: {agent: {host: azure.ai.project, name: wrong}}' },
+        @{ Label = 'wrong host casing'; Yaml = 'services: {agent: {host: Azure.AI.Agent, name: wrong}}' },
+        @{ Label = 'wrong service key casing'; Yaml = 'services: {Agent: {host: azure.ai.agent, name: wrong}}' },
+        @{ Label = 'wrong name key casing'; Yaml = 'services: {agent: {host: azure.ai.agent, Name: wrong}}' },
         @{ Label = 'missing service'; Yaml = 'name: project-name' },
+        @{ Label = 'multiple documents'; Yaml = "services: {agent: {host: azure.ai.agent, name: first}}`n---`nservices: {agent: {host: azure.ai.agent, name: second}}" },
+        @{ Label = 'sequence root'; Yaml = '- services: {agent: {host: azure.ai.agent, name: wrong}}' },
+        @{ Label = 'empty YAML'; Yaml = '' },
         @{ Label = 'malformed YAML'; Yaml = 'services: [bad' }
     ) {
         param($Label, $Yaml)
         [IO.File]::WriteAllText((Join-Path $deploymentRoot 'azure.yaml'), $Yaml)
-        { & $deploymentScript -EnvFile $envPath -Confirm:$false } | Should Throw 'Reading the agent name from azure.yaml failed'
+        { & $deploymentScript -EnvFile $envPath -Confirm:$false } | Should Throw 'Reading azure.yaml failed'
         $fixture.AzCalls.Count | Should Be 0
         $fixture.AzdCalls.Count | Should Be 0
         [IO.File]::ReadAllText($envPath) | Should BeExactly $original
+    }
+
+    It 'reports a missing PowerShell YAML module without a user profile' {
+        $emptyModules = Join-Path $TestDrive 'empty-modules'
+        $null = New-Item -ItemType Directory -Path $emptyModules -Force
+        $commonPath = (Join-Path $helperRoot 'Common.ps1').Replace("'", "''")
+        $manifestPath = (Join-Path $deploymentRoot 'azure.yaml').Replace("'", "''")
+        $emptyModules = $emptyModules.Replace("'", "''")
+        $powershell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $PSNativeCommandUseErrorActionPreference = $false
+        $ErrorActionPreference = 'Continue'
+        $output = & $powershell -NoProfile -NonInteractive -Command `
+            ". '$commonPath'; `$env:PSModulePath = '$emptyModules'; Get-DeploymentAgentName -ManifestPath '$manifestPath' -ServiceName 'agent'" 2>&1
+        $LASTEXITCODE | Should Be 1
+        ($output | Out-String) | Should Match 'Install-Module powershell-yaml'
+        $fixture.AzCalls.Count | Should Be 0
+        $fixture.AzdCalls.Count | Should Be 0
+        [IO.File]::ReadAllText($envPath) | Should BeExactly $original
+    }
+
+    It 'reads <Label> YAML names without Python' -TestCases @(
+        @{ Label = 'single-quoted'; Yaml = "services: {agent: {host: azure.ai.agent, name: 'quoted-agent'}}"; Expected = 'quoted-agent' },
+        @{ Label = 'double-quoted with a comment'; Yaml = "services:`n  agent:`n    host: azure.ai.agent`n    name: `"quoted-agent`" # comment"; Expected = 'quoted-agent' },
+        @{ Label = 'quoted numeric'; Yaml = 'services: {agent: {host: azure.ai.agent, name: "123"}}'; Expected = '123' },
+        @{ Label = 'anchored'; Yaml = "defaults: &agentDefaults {host: azure.ai.agent, name: anchored-agent}`nservices: {agent: *agentDefaults}"; Expected = 'anchored-agent' },
+        @{ Label = 'merged'; Yaml = "defaults: &agentDefaults {host: azure.ai.agent}`nservices: {agent: {<<: *agentDefaults, name: merged-agent}}"; Expected = 'merged-agent' }
+    ) {
+        param($Label, $Yaml, $Expected)
+        $manifestPath = Join-Path $deploymentRoot 'azure.yaml'
+        [IO.File]::WriteAllText($manifestPath, $Yaml, [Text.UTF8Encoding]::new($true))
+        Mock Get-Command { throw 'The YAML reader must not look up Python.' } -ParameterFilter { $Name -eq 'python' }
+        Get-DeploymentAgentName -ManifestPath $manifestPath -ServiceName 'agent' | Should BeExactly $Expected
+        Assert-MockCalled Get-Command -Times 0 -Exactly -ParameterFilter { $Name -eq 'python' } -Scope It
     }
 
     It 'defaults to the shared repository-root environment path' {

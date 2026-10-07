@@ -77,7 +77,7 @@ Do not add duplicate root `AZURE_AI_PROJECT_ID`, `FOUNDRY_PROJECT_ENDPOINT` or
 The single source of truth for the deployed agent name is
 `services.agent.name` in [azure.yaml](./azure.yaml). Edit that literal
 value to rename the agent; the service key `agent` remains unchanged.
-The script parses YAML, requires an explicit string name and rejects duplicate
+The script parses YAML in PowerShell using `powershell-yaml` 0.4.12, requires an explicit string name and rejects duplicate
 keys and environment substitutions. It ignores any previously saved
 `AZURE_FOUNDRY_AGENT_NAME` and no longer accepts `-AgentName`.
 After successful deployment and verification, it saves the manifest's name as
@@ -93,11 +93,13 @@ pass `-BotServiceArmId ''`.
 
 ## Run
 
-Install the local YAML parser once using the same `python` on PATH that the
-script uses (this is a deployment-tool dependency, not an agent runtime dependency):
+Install the PowerShell YAML module once for the user running the deployment.
+This is a deployment-tool dependency, not an agent runtime dependency. YAML
+reading no longer requires Python or PyYAML; the Python agent runtime is unchanged.
+The module version is pinned for reproducible parsing.
 
 ```powershell
-python -m pip install -r .\agent-deployment\requirements-deploy.txt
+Install-Module powershell-yaml -RequiredVersion 0.4.12 -Scope CurrentUser -Repository PSGallery
 ```
 
 Authenticate both CLIs before running: `azd auth login --tenant-id <tenant GUID>`
@@ -134,7 +136,7 @@ Unrelated configuration and credentials are preserved. No backup file is read or
 modified. Only explicitly selected deployment values are copied into azd; the
 script does not copy Atlassian secrets or dump all environment values.
 
-`-WhatIf` performs local validation, including parsing YAML with Python: no
+`-WhatIf` performs local validation, including parsing YAML in PowerShell: no
 az/azd calls, Azure changes, environment creation or file writes.
 Normal runs request confirmation; reviewed automation
 can use `-Confirm:$false`.

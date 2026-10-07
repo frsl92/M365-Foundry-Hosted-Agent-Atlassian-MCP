@@ -548,62 +548,49 @@ function Wait-ApimProvisioningResource {
     throw "APIM resource '$ResourceId' could not be verified within the read-back window. Completed writes remain; wait and rerun."
 }
 
+function Read-DeploymentManifest {
+    param(
+        [Parameter(Mandatory)][string]$ManifestPath
+    )
+
+    $yamlModule = @{ ModuleName = 'powershell-yaml'; RequiredVersion = '0.4.12' }
+    if (-not (Get-Module -ListAvailable -FullyQualifiedName $yamlModule)) {
+        throw 'powershell-yaml 0.4.12 is required to read azure.yaml. Run: Install-Module powershell-yaml -RequiredVersion 0.4.12 -Scope CurrentUser -Repository PSGallery'
+    }
+    Import-Module -FullyQualifiedName $yamlModule -ErrorAction Stop
+    try {
+        $manifest = powershell-yaml\ConvertFrom-Yaml -Yaml ([IO.File]::ReadAllText($ManifestPath)) `
+            -Ordered -AllDocuments -UseMergingParser -ErrorAction Stop
+    } catch [IO.IOException], [UnauthorizedAccessException], [Management.Automation.RuntimeException] {
+        throw 'Reading azure.yaml failed: expected a readable, valid YAML document with unique mapping keys.'
+    }
+    if ($manifest -isnot [Collections.IDictionary]) {
+        throw 'Reading azure.yaml failed: expected exactly one YAML document with a mapping at its root.'
+    }
+    return ,$manifest
+}
+
 function Get-DeploymentAgentName {
     param(
         [Parameter(Mandatory)][string]$ManifestPath,
         [Parameter(Mandatory)][string]$ServiceName
     )
 
-    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-        throw 'Python is required to read azure.yaml. Install Python and the packages in agent-deployment\requirements-deploy.txt.'
+    $manifest = Read-DeploymentManifest -ManifestPath $ManifestPath
+    $services = if ($manifest.Keys -ccontains 'services') { $manifest['services'] } else { $null }
+    $service = if ($services -is [Collections.IDictionary] -and $services.Keys -ccontains $ServiceName) {
+        $services[$ServiceName]
+    } else { $null }
+    if ($service -isnot [Collections.IDictionary] -or $service.Keys -cnotcontains 'host' -or
+        $service['host'] -cne 'azure.ai.agent') {
+        throw 'Reading azure.yaml failed: the selected service must exist and use host: azure.ai.agent.'
     }
-    $reader = @'
-import sys
-try:
-    import yaml
-except ImportError:
-    sys.exit("PyYAML is required. Run: python -m pip install -r agent-deployment\\requirements-deploy.txt")
-
-class UniqueKeyLoader(yaml.SafeLoader):
-    def construct_mapping(self, node, deep=False):
-        self.flatten_mapping(node)
-        mapping = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            if key in mapping:
-                raise ValueError("Duplicate YAML keys are not supported.")
-            mapping[key] = self.construct_object(value_node, deep=deep)
-        return mapping
-
-try:
-    with open(sys.argv[1], encoding="utf-8-sig") as source:
-        manifest = yaml.load(source, Loader=UniqueKeyLoader)
-except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError):
-    sys.exit("Cannot read azure.yaml: expected valid YAML with unique mapping keys.")
-
-services = manifest.get("services") if isinstance(manifest, dict) else None
-service = services.get(sys.argv[2]) if isinstance(services, dict) else None
-if not isinstance(service, dict) or service.get("host") != "azure.ai.agent":
-    sys.exit("The selected service must exist in azure.yaml and use host: azure.ai.agent.")
-name = service.get("name")
-if not isinstance(name, str) or not name.strip():
-    sys.exit("The selected agent service must have an explicit, nonempty string name in azure.yaml.")
-import re
-if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
-    sys.exit("The agent name in azure.yaml must be literal: use letters, digits, dots, underscores or hyphens, not environment substitutions.")
-print(name)
-'@
-    $PSNativeCommandUseErrorActionPreference = $false
-    $ErrorActionPreference = 'Continue'
-    $output = & python -c $reader $ManifestPath $ServiceName 2>&1
-    $exitCode = $LASTEXITCODE
-    $ErrorActionPreference = 'Stop'
-    if ($exitCode -ne 0) {
-        throw "Reading the agent name from azure.yaml failed (Python exit code $exitCode). $($output -join "`n")"
+    $name = if ($service.Keys -ccontains 'name') { $service['name'] } else { $null }
+    if ($name -isnot [string] -or [string]::IsNullOrWhiteSpace($name)) {
+        throw 'Reading azure.yaml failed: the selected agent service must have an explicit, nonempty string name.'
     }
-    $name = ($output -join "`n").Trim()
-    if ($name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
-        throw 'The YAML reader returned an invalid agent name.'
+    if ($name -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9._-]*\z') {
+        throw 'Reading azure.yaml failed: the agent name must be literal, using letters, digits, dots, underscores or hyphens, not environment substitutions.'
     }
     return $name
 }
