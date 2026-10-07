@@ -71,7 +71,7 @@ Describe 'APIM fragment and external MCP provisioning' {
             if ($state.Batch) { $null = $urlArgument.StartsWith('"') | Should Be $true }
             $uri = [Uri]$urlArgument.Trim('"')
             $id = [Uri]::UnescapeDataString($uri.AbsolutePath)
-            if ($uri.AbsolutePath -match 'listSecrets|/subscriptions/.*/listKeys') { throw 'Keys must not be retrieved.' }
+            if ($uri.AbsolutePath -match 'listSecrets|/listValue|/subscriptions/.*/listKeys') { throw 'Secrets and keys must not be retrieved.' }
             if ($state.FailCode -and $id.EndsWith($state.FailSuffix) -and (-not $state.FailWritesOnly -or $method -eq 'put')) {
                 $global:LASTEXITCODE = 1
                 return "ERROR: ($($state.FailCode)) dummy-private-secret dummy-private-auth-secret"
@@ -210,15 +210,70 @@ Describe 'APIM fragment and external MCP provisioning' {
         $state.Writes.Count | Should Be 0
     }
 
-    It 'preflights missing, secret and changed named values without writing' {
+    It 'preflights missing and changed public named values without writing' {
         $named = $state.NamedValues | Where-Object { $_.name -eq 'tenant-id' }
-        $named.properties.secret = $true
-        { & $fragmentScript -EnvFile $envPath } | Should Throw 'saved public'
-        $named.properties.secret = $false
         $named.properties.value = 'different'
         { & $fragmentScript -EnvFile $envPath } | Should Throw 'saved public'
         $state.NamedValues = @($state.NamedValues | Where-Object { $_.name -ne 'tenant-id' })
         { & $fragmentScript -EnvFile $envPath } | Should Throw 'Missing or ambiguous'
+        $state.Writes.Count | Should Be 0
+    }
+
+    It 'accepts a <Kind> secret dependency in prerequisites 6 and 7 without reading or comparing its contents' -TestCases @(
+        @{ Kind = 'missing value' },
+        @{ Kind = 'null value' },
+        @{ Kind = 'different returned value' },
+        @{ Kind = 'Key Vault-backed' }
+    ) {
+        param($Kind)
+        $named = $state.NamedValues | Where-Object { $_.name -eq 'tenant-id' }
+        $named.properties.secret = $true
+        $named.properties.Remove('value')
+        if ($Kind -eq 'null value') { $named.properties.value = $null }
+        if ($Kind -eq 'different returned value') { $named.properties.value = 'dummy-private-secret' }
+        if ($Kind -eq 'Key Vault-backed') {
+            $named.properties.keyVault = @{ secretIdentifier = 'https://test-vault.vault.azure.net/secrets/tenant-id' }
+        }
+        $warnings = @(& $fragmentScript -EnvFile $envPath -Confirm:$false 3>&1)
+        $state.Writes.Count | Should Be 2
+        ($warnings | Out-String) | Should Match "Named value 'tenant-id'"
+        ($warnings | Out-String) | Should Match 'contents were not read or compared'
+        ($warnings | Out-String) | Should Not Match 'dummy-private'
+        (Read-PrerequisiteEnv -Path $envPath)['AZURE_APIM_POLICY_FRAGMENTS_CONFIGURED'] | Should BeExactly 'true'
+        $state.Writes.Clear()
+        $warnings = @(& $apiScript -EnvFile $envPath -Confirm:$false 3>&1)
+        $state.Writes.Count | Should Be 4
+        ($warnings | Out-String) | Should Match 'contents were not read or compared'
+        ($warnings | Out-String) | Should Not Match 'dummy-private'
+        (Read-PrerequisiteEnv -Path $envPath)['AZURE_APIM_APIS_CONFIGURED'] | Should BeExactly 'true'
+        $named.properties.secret | Should Be $true
+        @($state.Calls | Where-Object { ($_ -join ' ') -match 'listValue|listSecrets|listKeys' }).Count | Should Be 0
+    }
+
+    It 'still rejects invalid resource identity for a secret dependency before writing' {
+        $named = $state.NamedValues | Where-Object { $_.name -eq 'tenant-id' }
+        $named.properties.secret = $true
+        $named.id = '/subscriptions/other/resourceGroups/other/providers/Microsoft.ApiManagement/service/other/namedValues/tenant-id'
+        { & $fragmentScript -EnvFile $envPath } | Should Throw 'invalid resource identity'
+        $state.Writes.Count | Should Be 0
+    }
+
+    It 'still rejects ambiguous secret dependencies before writing' {
+        $named = $state.NamedValues | Where-Object { $_.name -eq 'tenant-id' }
+        $named.properties.secret = $true
+        $state.NamedValues += $named
+        { & $fragmentScript -EnvFile $envPath } | Should Throw 'Missing or ambiguous'
+        $state.Writes.Count | Should Be 0
+    }
+
+    It 'still rejects <Kind> secrecy metadata before writing' -TestCases @(
+        @{ Kind = 'missing' }, @{ Kind = 'non-boolean' }
+    ) {
+        param($Kind)
+        $named = $state.NamedValues | Where-Object { $_.name -eq 'tenant-id' }
+        if ($Kind -eq 'missing') { $named.properties.Remove('secret') }
+        else { $named.properties.secret = 'true' }
+        { & $fragmentScript -EnvFile $envPath } | Should Throw 'secrecy metadata'
         $state.Writes.Count | Should Be 0
     }
 

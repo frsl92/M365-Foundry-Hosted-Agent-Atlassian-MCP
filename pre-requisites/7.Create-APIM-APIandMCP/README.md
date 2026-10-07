@@ -23,8 +23,12 @@ HTTP onboarding API; it is not exported as MCP tools.
 - An APIM tier/gateway supporting external MCP servers and Streamable HTTP.
   Unsupported tiers/features are reported as Azure errors, not replaced with
   an HTTP API or a different MCP mode.
-- Keep the supplied fragment assets and the twelve public named values from
-  prerequisite 5. Referenced named values are checked against the saved values.
+- Keep the supplied fragment assets and the named-value dependencies from
+  prerequisite 5. Public references are checked against the saved values.
+  Existing secret or Key Vault-backed references are accepted after identity,
+  uniqueness and secrecy-metadata checks, with a warning that their contents
+  were not read or compared. No secret-retrieval permissions are required.
+  Prerequisite 5 itself still manages public values only.
 
 The backend uses **`ATLASSIAN_MCP_BASE_URL` + `ATLASSIAN_MCP_PATH`**, saved by
 prerequisite 5, by default `https://mcp.atlassian.com/v2/mcp`.

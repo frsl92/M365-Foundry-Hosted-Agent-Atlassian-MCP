@@ -23,14 +23,19 @@ instead of converting those authentication failures into upstream HTTP 502 error
 
 - Complete prerequisite 5 successfully for this APIM resource.
 - Azure CLI installed and signed in to the saved public-cloud subscription and
-  tenant. Permission to read APIM/public named values and write policy fragments
+  tenant. Permission to read APIM/named-value metadata and write policy fragments
   is required, for example API Management Service Contributor.
 - Root environment inputs `AZURE_APIM_NAME`, `AZURE_RESOURCE_GROUP_NAME` and
   `AZURE_SUBSCRIPTION_ID`; the earlier saved resource ID, tenant and named-value
   completion flag must match. No new user environment variables are needed.
 - Referenced public named values must still match the saved configuration.
-  Missing, ambiguous, secret, Key Vault-backed or changed references stop the
-  script before writes. Rerun prerequisite 5 to reconcile them.
+  Existing secret or Key Vault-backed references are accepted without retrieving
+  or comparing their contents; a warning makes this verification limit explicit.
+  All references must exist uniquely in the selected APIM instance and have valid
+  resource identity and secrecy metadata. Missing/ambiguous references, invalid
+  metadata and changed public values stop the script before writes.
+  Prerequisite 5 still manages public values only and will not overwrite secret
+  or Key Vault-backed collisions.
 
 ## Run from the repository root
 

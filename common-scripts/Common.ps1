@@ -522,8 +522,14 @@ function Assert-ApimPolicyDependencies {
         if ($matches.Count -ne 1) { throw "Missing or ambiguous named value '$reference'. Rerun prerequisite 5." }
         $item = $matches[0]
         if ($item.id -ine "$($Context.ResourceId)/namedValues/$($item.name)" -or
-            $item.properties.secret -isnot [bool] -or $item.properties.secret -or $item.properties.keyVault -or
-            [string]::IsNullOrWhiteSpace($item.properties.value) -or -not $mapping.ContainsKey($reference) -or
+            $item.properties.secret -isnot [bool] -or -not $mapping.ContainsKey($reference)) {
+            throw "Named value '$reference' has invalid resource identity, secrecy metadata or prerequisite mapping. Inspect APIM and rerun."
+        }
+        if ($item.properties.secret -or $item.properties.keyVault) {
+            Write-Warning "Named value '$reference' is secret or Key Vault-backed. Its existence and resource identity were verified; its contents were not read or compared with the saved configuration."
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($item.properties.value) -or
             $item.properties.value -cne $Context.Values[$mapping[$reference]]) {
             throw "Named value '$reference' does not match the saved public prerequisite configuration. Rerun prerequisite 5."
         }
